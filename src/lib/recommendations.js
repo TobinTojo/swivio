@@ -1,12 +1,23 @@
 import { recommendNextMovieTitle, isAiConfigured } from './ai.js';
 import { lookupMovieByTitle, discoverOneMovie } from './tmdb.js';
 import { getGroupGenreNames } from './scoring.js';
+import { sortMoviesByRound, getVotersForMovie } from './round.js';
 
 /**
  * After a swipe, ask Groq for the next movie, look it up on TMDB, and add to the room.
  */
 export async function appendRecommendedMovie(supabase, roomId, { movieId, vote, fetchRoomData, insertMovie }) {
   const { users, movies, votes } = await fetchRoomData(roomId);
+  const sorted = sortMoviesByRound(movies);
+  const idx = sorted.findIndex((m) => m.id === movieId);
+
+  // Another client may have already queued the next card
+  if (idx >= 0 && idx < sorted.length - 1) return null;
+
+  const userIds = users.map((u) => u.id);
+  const voters = getVotersForMovie(votes, movieId);
+  if (userIds.length === 0 || !userIds.every((id) => voters.has(id))) return null;
+
   const lastMovie = movies.find((m) => m.id === movieId);
   const existingIds = new Set(movies.map((m) => m.id));
   const genreNames = getGroupGenreNames(users);

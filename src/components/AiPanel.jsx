@@ -3,17 +3,19 @@ import { isAiConfigured, generateGroupSummary, generateMovieReason } from '../li
 import { getAiCache, setAiCache, subscribeAiCache } from '../lib/supabase.js';
 import { rankMatches, aggregateGroupGenres } from '../lib/scoring.js';
 import { VOTE } from '../lib/votes.js';
+import { ROOM_STATUS } from '../lib/lobby.js';
 
 const MIN_VOTES_FOR_AI = 10;
 
-export default function AiPanel({ roomId, movies, votes, users, onReasonsReady }) {
+export default function AiPanel({ roomId, roomStatus, movies, votes, users, onReasonsReady }) {
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
   const enabled = isAiConfigured();
   const totalVotes = votes.length;
-  const canGenerate = enabled && totalVotes >= MIN_VOTES_FOR_AI;
+  const isSwiping = roomStatus === ROOM_STATUS.SWIPING;
+  const canGenerate = enabled && isSwiping && totalVotes >= MIN_VOTES_FOR_AI;
   const groupGenres = aggregateGroupGenres(users);
 
   useEffect(() => {
@@ -93,15 +95,9 @@ export default function AiPanel({ roomId, movies, votes, users, onReasonsReady }
     return () => { cancelled = true; };
   }, [roomId, canGenerate, movies, votes, users, groupGenres, onReasonsReady]);
 
-  if (!enabled) return null;
+  if (!enabled || !isSwiping) return null;
 
-  if (totalVotes < MIN_VOTES_FOR_AI) {
-    return (
-      <div className="ai-panel ai-panel--muted">
-        <p>AI insights unlock after {MIN_VOTES_FOR_AI} group votes ({totalVotes}/{MIN_VOTES_FOR_AI})</p>
-      </div>
-    );
-  }
+  if (totalVotes < MIN_VOTES_FOR_AI) return null;
 
   return (
     <div className="ai-panel">
@@ -114,7 +110,7 @@ export default function AiPanel({ roomId, movies, votes, users, onReasonsReady }
           Group loves: {groupGenres.slice(0, 5).map((g) => g.name).join(', ')}
         </p>
       )}
-      {loading && <p className="ai-panel__loading">Analyzing your group's taste…</p>}
+      {loading && <p className="ai-panel__loading">Analyzing your group&apos;s taste…</p>}
       {error && <p className="ai-panel__error">{error}</p>}
       {summary && <p className="ai-panel__summary">{summary}</p>}
     </div>

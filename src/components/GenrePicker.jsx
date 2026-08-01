@@ -4,7 +4,7 @@ import { saveUserGenres } from '../lib/supabase.js';
 
 const MIN_GENRES = 1;
 
-export default function GenrePicker({ roomId, userId, displayName, onComplete }) {
+export default function GenrePicker({ roomId, userId, displayName, avatarUrl, onComplete }) {
   const [genres, setGenres] = useState([]);
   const [selected, setSelected] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -34,7 +34,7 @@ export default function GenrePicker({ roomId, userId, displayName, onComplete })
     setError(null);
 
     try {
-      await saveUserGenres(roomId, userId, selected, displayName);
+      await saveUserGenres(roomId, userId, selected, displayName, avatarUrl);
       onComplete?.(selected);
     } catch (err) {
       setError(err.message || 'Failed to save genres');
@@ -83,7 +83,7 @@ export default function GenrePicker({ roomId, userId, displayName, onComplete })
         onClick={handleSubmit}
         disabled={saving || selected.length < MIN_GENRES}
       >
-        {saving ? 'Building your deck…' : 'Start Swiping'}
+        {saving ? 'Saving…' : 'Save genres'}
       </button>
     </div>
   );

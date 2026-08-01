@@ -4,7 +4,7 @@
 create table if not exists rooms (
   id text primary key,
   host_user_id text not null,
-  status text not null default 'active',
+  status text not null default 'lobby',
   created_at timestamptz not null default now(),
   last_updated timestamptz not null default now()
 );
@@ -13,6 +13,8 @@ create table if not exists room_users (
   room_id text not null references rooms(id) on delete cascade,
   user_id text not null,
   display_name text not null,
+  avatar_url text,
+  is_ready boolean not null default false,
   favorite_genres jsonb default '[]'::jsonb,
   joined_at timestamptz not null default now(),
   last_seen timestamptz not null default now(),
@@ -80,6 +82,7 @@ create policy "rooms_update_auth" on rooms for update to authenticated using (ho
 create policy "room_users_select_auth" on room_users for select to authenticated using (true);
 create policy "room_users_insert_auth" on room_users for insert to authenticated with check (user_id = auth.uid()::text);
 create policy "room_users_update_auth" on room_users for update to authenticated using (user_id = auth.uid()::text);
+create policy "room_users_delete_self" on room_users for delete to authenticated using (user_id = auth.uid()::text);
 
 create policy "room_movies_select_auth" on room_movies for select to authenticated using (true);
 create policy "room_movies_insert_auth" on room_movies for insert to authenticated with check (true);

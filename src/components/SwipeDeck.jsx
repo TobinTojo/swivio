@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useMemo } from 'react';
 import MovieCard from './MovieCard.jsx';
 import WatchedModal from './WatchedModal.jsx';
+import { getActiveRound, getVotersForMovie } from '../lib/round.js';
 import { VOTE, voteOverlay, overlayText } from '../lib/votes.js';
 
 const SWIPE_THRESHOLD = 80;
@@ -8,29 +9,21 @@ const SWIPE_THRESHOLD = 80;
 export default function SwipeDeck({
   movies,
   votes,
+  users,
   userId,
   onVote,
-  queueHead,
   fetchingNext,
 }) {
-  const votedIds = useMemo(
-    () => new Set(votes.filter((v) => v.userId === userId).map((v) => v.movieId)),
-    [votes, userId]
+  const round = useMemo(
+    () => getActiveRound(movies, votes, users),
+    [movies, votes, users]
   );
 
-  const baseDeck = useMemo(
-    () => movies.filter((m) => !votedIds.has(m.id)),
-    [movies, votedIds]
-  );
-
-  const deck = useMemo(() => {
-    if (queueHead && !votedIds.has(queueHead.id)) {
-      return [queueHead, ...baseDeck.filter((m) => m.id !== queueHead.id)];
-    }
-    return baseDeck;
-  }, [baseDeck, queueHead, votedIds]);
-
-  const current = deck[0];
+  const current = round?.movie ?? null;
+  const userHasVoted = current
+    ? getVotersForMovie(votes, current.id).has(userId)
+    : false;
+  const waitingForOthers = Boolean(current && userHasVoted && !round.allVoted);
 
   const [drag, setDrag] = useState({ x: 0, y: 0, active: false });
   const [overlay, setOverlay] = useState(null);
@@ -46,7 +39,7 @@ export default function SwipeDeck({
 
   const commitVote = useCallback(
     async (vote, animateSwipe = true) => {
-      if (!current || animating || fetchingNext) return;
+      if (!current || animating || fetchingNext || userHasVoted || waitingForOthers) return;
       setAnimating(true);
       setShowWatchedModal(false);
 
@@ -67,18 +60,18 @@ export default function SwipeDeck({
         }, animateSwipe ? 250 : 150);
       }
     },
-    [current, animating, fetchingNext, onVote, resetDrag]
+    [current, animating, fetchingNext, userHasVoted, waitingForOthers, onVote, resetDrag]
   );
 
   const onPosterPointerDown = (e) => {
-    if (animating || fetchingNext || !current) return;
+    if (animating || fetchingNext || !current || userHasVoted || waitingForOthers) return;
     e.currentTarget.setPointerCapture(e.pointerId);
     startRef.current = { x: e.clientX, y: e.clientY };
     setDrag((d) => ({ ...d, active: true }));
   };
 
   const onPosterPointerMove = (e) => {
-    if (!startRef.current || animating) return;
+    if (!startRef.current || animating || userHasVoted) return;
     const dx = e.clientX - startRef.current.x;
     const dy = (e.clientY - startRef.current.y) * 0.3;
     setDrag({ x: dx, y: dy, active: true });
@@ -88,7 +81,7 @@ export default function SwipeDeck({
   };
 
   const onPosterPointerUp = () => {
-    if (!startRef.current || animating) return;
+    if (!startRef.current || animating || userHasVoted) return;
     const dx = drag.x;
     if (dx > SWIPE_THRESHOLD) commitVote(VOTE.LIKE);
     else if (dx < -SWIPE_THRESHOLD) commitVote(VOTE.DISLIKE);
@@ -99,13 +92,13 @@ export default function SwipeDeck({
     commitVote(vote, false);
   };
 
-  if (fetchingNext) {
+  if (fetchingNext || round?.needsNext) {
     return (
       <div className="swipe-deck swipe-deck--empty">
         <div className="empty-state">
           <span className="empty-state__icon">✨</span>
           <h3>Finding your next pick…</h3>
-          <p>Groq is choosing a movie based on your group&apos;s taste.</p>
+          <p>Everyone swiped — Groq is choosing the next movie for your group.</p>
         </div>
       </div>
     );
@@ -125,27 +118,35 @@ export default function SwipeDeck({
 
   const rotation = drag.x * 0.08;
   const frontStyle = {
-    transform: `translate(${drag.x}px, ${drag.y}px) rotate(${rotation}deg)`,
+    transform: waitingForOthers ? 'none' : `translate(${drag.x}px, ${drag.y}px) rotate(${rotation}deg)`,
     transition: drag.active ? 'none' : 'transform 0.25s ease',
   };
 
-  const votedCount = movies.filter((m) => votedIds.has(m.id)).length;
   const isDragging = drag.active || animating;
-  const disabled = animating || fetchingNext;
+  const disabled = animating || fetchingNext || userHasVoted || waitingForOthers;
 
   return (
     <div className="swipe-deck">
       <div className="swipe-deck__counter">
-        {votedCount + 1} swiped · {deck.length} left
+        {round.votedCount}/{round.totalVoters} swiped this card
       </div>
 
-      <div className={`swipe-deck__stack ${isDragging ? 'swipe-deck__stack--dragging' : ''}`}>
+      {waitingForOthers && (
+        <div className="swipe-deck__waiting">
+          <p className="swipe-deck__waiting-title">Waiting for everyone to swipe</p>
+          <p className="swipe-deck__waiting-names">
+            Still waiting: {round.waitingFor.map((u) => u.displayName).join(', ')}
+          </p>
+        </div>
+      )}
+
+      <div className={`swipe-deck__stack ${isDragging ? 'swipe-deck__stack--dragging' : ''} ${waitingForOthers ? 'swipe-deck__stack--waiting' : ''}`}>
         <div className="swipe-deck__card swipe-deck__card--front" style={frontStyle}>
           <div className="swipe-card-shell">
             <MovieCard
               movie={current}
-              overlay={overlay}
-              overlayText={overlay ? overlayText(overlay) : null}
+              overlay={waitingForOthers ? 'waiting' : overlay}
+              overlayText={waitingForOthers ? 'WAITING' : overlay ? overlayText(overlay) : null}
               onPosterPointerDown={onPosterPointerDown}
               onPosterPointerMove={onPosterPointerMove}
               onPosterPointerUp={onPosterPointerUp}

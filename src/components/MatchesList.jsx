@@ -25,8 +25,11 @@ export default function MatchesList({ matches, movieReasons }) {
               </span>
             </div>
             <div className="matches-list__stats">
-              <span className="stat-like">♥ {movie.likeCount}</span>
-              <span className="stat-dislike">✕ {movie.dislikeCount}</span>
+              <span className="stat-like">♥ {movie.positiveCount}</span>
+              <span className="stat-dislike">✕ {movie.negativeCount}</span>
+              {movie.roomSize > 0 && (
+                <span className="stat-voters">{movie.voteCount}/{movie.roomSize} voted</span>
+              )}
               {movie.watchedEnjoyedCount > 0 && (
                 <span className="stat-seen-like">👁♥ {movie.watchedEnjoyedCount}</span>
               )}

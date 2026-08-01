@@ -1,17 +1,18 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation, Link } from 'react-router-dom';
 import {
   isSupabaseConfigured,
   generateRoomId,
   createRoom,
   joinRoomUser,
-  roomExists,
+  canJoinRoomById,
 } from '../lib/supabase.js';
 import { isTmdbConfigured } from '../lib/tmdb.js';
 import { isAiConfigured } from '../lib/ai.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import GoogleSignInButton from '../components/GoogleSignInButton.jsx';
-import { IconFilm, IconUsers, IconSparkles, IconHeart } from '../components/Icons.jsx';
+import Navbar from '../components/Navbar.jsx';
+import { IconUsers, IconSparkles, IconHeart } from '../components/Icons.jsx';
 
 const POSTER_BASE = 'https://image.tmdb.org/t/p/w342';
 const HERO_POSTERS = [
@@ -101,7 +102,7 @@ export default function Landing() {
     try {
       const roomId = generateRoomId();
       await createRoom(roomId, userId);
-      await joinRoomUser(roomId, userId, name.trim());
+      await joinRoomUser(roomId, userId, name.trim(), avatarUrl);
       navigate(`/room/${roomId}`);
     } catch (err) {
       setError(err.message || 'Failed to create room');
@@ -134,13 +135,13 @@ export default function Landing() {
 
     try {
       const roomId = joinCode.trim().toUpperCase();
-      const exists = await roomExists(roomId);
-      if (!exists) {
-        setError('Room not found. Check the code and try again.');
+      const joinCheck = await canJoinRoomById(roomId);
+      if (!joinCheck.ok) {
+        setError(joinCheck.reason);
         return;
       }
 
-      await joinRoomUser(roomId, userId, name.trim());
+      await joinRoomUser(roomId, userId, name.trim(), avatarUrl);
       navigate(`/room/${roomId}`);
     } catch (err) {
       setError(err.message || 'Failed to join room');
@@ -166,33 +167,30 @@ export default function Landing() {
         <div className="landing-page__overlay" />
       </div>
 
-      <nav className="landing-nav">
-        <div className="landing-nav__brand">
-          <IconFilm className="landing-nav__logo-icon" />
-          <span>Swivio</span>
-        </div>
-        <div className="landing-nav__right">
-          {supabaseReady && (
-            <div className="landing-nav__status">
-              <span className={`landing-pill ${isTmdbConfigured() ? 'landing-pill--ok' : ''}`}>
-                TMDB {isTmdbConfigured() ? '✓' : 'mock'}
-              </span>
-              <span className={`landing-pill ${isAiConfigured() ? 'landing-pill--ok' : ''}`}>
-                AI {isAiConfigured() ? '✓' : 'off'}
-              </span>
-            </div>
-          )}
-          {isSignedIn && (
-            <div className="user-chip">
-              {avatarUrl && <img className="user-chip__avatar" src={avatarUrl} alt="" />}
-              <span className="user-chip__name">{displayName}</span>
-              <button type="button" className="user-chip__signout" onClick={() => signOut()}>
-                Sign out
-              </button>
-            </div>
-          )}
-        </div>
-      </nav>
+      <Navbar
+        variant="landing"
+        avatarUrl={isSignedIn ? avatarUrl : null}
+        displayName={displayName}
+        statusPills={supabaseReady ? (
+          <div className="landing-nav__status">
+            <span className={`landing-pill ${isTmdbConfigured() ? 'landing-pill--ok' : ''}`}>
+              TMDB {isTmdbConfigured() ? '✓' : 'mock'}
+            </span>
+            <span className={`landing-pill ${isAiConfigured() ? 'landing-pill--ok' : ''}`}>
+              AI {isAiConfigured() ? '✓' : 'off'}
+            </span>
+          </div>
+        ) : null}
+        userChip={isSignedIn ? (
+          <div className="user-chip">
+            {avatarUrl && <img className="user-chip__avatar" src={avatarUrl} alt="" />}
+            <span className="user-chip__name">{displayName}</span>
+            <button type="button" className="user-chip__signout" onClick={() => signOut()}>
+              Sign out
+            </button>
+          </div>
+        ) : null}
+      />
 
       <header className="landing-hero">
         <p className="landing-hero__eyebrow">Movie night, simplified</p>
@@ -250,6 +248,14 @@ export default function Landing() {
               <div className="landing-cta__card-header">
                 <h2>Start swiping</h2>
                 <p>Signed in as {displayName}</p>
+              </div>
+
+              <Link to="/daily" className="btn btn--secondary btn--block landing-daily-link">
+                🎯 Daily Swipes — train your taste
+              </Link>
+
+              <div className="landing__divider">
+                <span>group session</span>
               </div>
 
               <label className="field">

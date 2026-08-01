@@ -1,6 +1,9 @@
 import { createClient } from '@supabase/supabase-js';
 import { fetchMoviesByGenres } from './tmdb.js';
 import { appendRecommendedMovie as buildNextMovie } from './recommendations.js';
+import { ROOM_STATUS, normalizeRoomStatus, canJoinRoom } from './lobby.js';
+
+export { ROOM_STATUS, normalizeRoomStatus, canJoinRoom };
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -27,9 +30,20 @@ function mapUser(row) {
   return {
     id: row.user_id,
     displayName: row.display_name,
+    avatarUrl: row.avatar_url ?? null,
+    isReady: row.is_ready ?? false,
     joinedAt: row.joined_at,
     lastSeen: row.last_seen,
     favoriteGenres: row.favorite_genres ?? [],
+  };
+}
+
+function mapRoom(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    hostUserId: row.host_user_id,
+    status: normalizeRoomStatus(row.status),
   };
 }
 
@@ -62,7 +76,7 @@ export async function createRoom(roomId, hostUserId) {
   const { error: roomError } = await supabase.from('rooms').insert({
     id: roomId,
     host_user_id: hostUserId,
-    status: 'active',
+    status: ROOM_STATUS.LOBBY,
   });
   if (roomError) throw roomError;
 }
@@ -150,41 +164,157 @@ export async function refreshRoomMoviesFromGroup(roomId, fallbackGenres = []) {
   return { movies, genreNames };
 }
 
-export async function joinRoomUser(roomId, userId, displayName) {
-  const { error } = await supabase.from('room_users').upsert(
-    {
-      room_id: roomId,
-      user_id: userId,
-      display_name: displayName,
-      last_seen: new Date().toISOString(),
-    },
-    { onConflict: 'room_id,user_id' }
-  );
+export async function getRoom(roomId) {
+  const { data, error } = await supabase
+    .from('rooms')
+    .select('*')
+    .eq('id', roomId)
+    .maybeSingle();
+  if (error) throw error;
+  return mapRoom(data);
+}
+
+export async function joinRoomUser(roomId, userId, displayName, avatarUrl = null) {
+  const room = await getRoom(roomId);
+  if (!room) throw new Error('Room not found');
+
+  const { data: existing } = await supabase
+    .from('room_users')
+    .select('user_id')
+    .eq('room_id', roomId)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (!existing && !canJoinRoom(room.status)) {
+    throw new Error('This session already started. You can\'t join now.');
+  }
+
+  const row = {
+    room_id: roomId,
+    user_id: userId,
+    display_name: displayName,
+    last_seen: new Date().toISOString(),
+    is_ready: false,
+  };
+
+  if (avatarUrl) row.avatar_url = avatarUrl;
+
+  let { error } = await supabase.from('room_users').upsert(row, { onConflict: 'room_id,user_id' });
+
+  // Fallback if migration not run yet
+  if (error) {
+    ({ error } = await supabase.from('room_users').upsert(
+      {
+        room_id: roomId,
+        user_id: userId,
+        display_name: displayName,
+        last_seen: new Date().toISOString(),
+      },
+      { onConflict: 'room_id,user_id' }
+    ));
+  }
+
   if (error) throw error;
 }
 
-export async function saveUserGenres(roomId, userId, genres, displayName) {
-  const { error } = await supabase.from('room_users').upsert(
-    {
-      room_id: roomId,
-      user_id: userId,
-      display_name: displayName,
-      favorite_genres: genres,
-      last_seen: new Date().toISOString(),
-    },
-    { onConflict: 'room_id,user_id' }
-  );
+export async function leaveRoomUser(roomId, userId) {
+  const { error } = await supabase
+    .from('room_users')
+    .delete()
+    .eq('room_id', roomId)
+    .eq('user_id', userId);
+  if (error) throw error;
+}
+
+export async function setUserReady(roomId, userId, isReady, displayName, avatarUrl = null) {
+  const row = {
+    room_id: roomId,
+    user_id: userId,
+    display_name: displayName,
+    is_ready: isReady,
+    last_seen: new Date().toISOString(),
+  };
+  if (avatarUrl) row.avatar_url = avatarUrl;
+
+  let { error } = await supabase.from('room_users').upsert(row, { onConflict: 'room_id,user_id' });
+
+  if (error) {
+    ({ error } = await supabase.from('room_users').upsert(
+      {
+        room_id: roomId,
+        user_id: userId,
+        display_name: displayName,
+        last_seen: new Date().toISOString(),
+      },
+      { onConflict: 'room_id,user_id' }
+    ));
+  }
+
+  if (error) throw error;
+}
+
+export async function startRoomFromLobby(roomId, hostUserId) {
+  const users = await fetchUsers(roomId);
+  if (users.length === 0) throw new Error('No one in the room');
+  if (!users.every((u) => u.isReady)) throw new Error('Everyone must ready up first');
+
+  const { error } = await supabase
+    .from('rooms')
+    .update({ status: ROOM_STATUS.GENRES, last_updated: new Date().toISOString() })
+    .eq('id', roomId)
+    .eq('host_user_id', hostUserId);
+
+  if (error) throw error;
+}
+
+export async function setRoomStatus(roomId, status) {
+  const { error } = await supabase
+    .from('rooms')
+    .update({ status, last_updated: new Date().toISOString() })
+    .eq('id', roomId);
+  if (error) throw error;
+}
+
+export async function saveUserGenres(roomId, userId, genres, displayName, avatarUrl = null) {
+  const row = {
+    room_id: roomId,
+    user_id: userId,
+    display_name: displayName,
+    favorite_genres: genres,
+    last_seen: new Date().toISOString(),
+  };
+  if (avatarUrl) row.avatar_url = avatarUrl;
+
+  let { error } = await supabase.from('room_users').upsert(row, { onConflict: 'room_id,user_id' });
+
+  if (error) {
+    ({ error } = await supabase.from('room_users').upsert(
+      {
+        room_id: roomId,
+        user_id: userId,
+        display_name: displayName,
+        favorite_genres: genres,
+        last_seen: new Date().toISOString(),
+      },
+      { onConflict: 'room_id,user_id' }
+    ));
+  }
+
   if (error) throw error;
 }
 
 export async function roomExists(roomId) {
-  const { data, error } = await supabase
-    .from('rooms')
-    .select('id')
-    .eq('id', roomId)
-    .maybeSingle();
-  if (error) throw error;
-  return Boolean(data);
+  const room = await getRoom(roomId);
+  return Boolean(room);
+}
+
+export async function canJoinRoomById(roomId) {
+  const room = await getRoom(roomId);
+  if (!room) return { ok: false, reason: 'Room not found' };
+  if (!canJoinRoom(room.status)) {
+    return { ok: false, reason: 'This session already started. You can\'t join now.' };
+  }
+  return { ok: true, room };
 }
 
 export async function castVote(roomId, userId, movieId, vote) {
@@ -277,7 +407,7 @@ export function subscribeRoom(roomId, callback, onError) {
         onError?.(error);
         return;
       }
-      callback(data ? { id: data.id, hostUserId: data.host_user_id, ...data } : null);
+      callback(mapRoom(data));
     });
 
   const channel = supabase
@@ -295,7 +425,7 @@ export function subscribeRoom(roomId, callback, onError) {
           onError?.(error);
           return;
         }
-        callback(data ? { id: data.id, hostUserId: data.host_user_id, ...data } : null);
+        callback(mapRoom(data));
       }
     )
     .subscribe();

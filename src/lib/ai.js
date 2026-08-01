@@ -122,3 +122,33 @@ Write ONE sentence explaining why this movie might fit this group's taste. No sp
 
   return callAi(prompt);
 }
+
+/** One movie for the whole group's daily pick */
+export async function recommendDailyGroupMovie({ users, tasteByUser, groupGenres }) {
+  const memberTaste = Object.entries(tasteByUser)
+    .map(([, t]) => `${t.name}: liked ${t.likes.slice(0, 5).join(', ') || 'nothing yet'}; passed on ${t.dislikes.slice(0, 3).join(', ') || 'nothing'}`)
+    .join('\n');
+
+  const prompt = `You are picking ONE movie for a friend group to watch together tonight.
+
+Group members and their recent solo swipes:
+${memberTaste || 'No swipe data yet — pick something broadly appealing.'}
+
+Group genre preferences: ${groupGenres?.length ? groupGenres.join(', ') : 'various'}
+
+Pick ONE real, well-known movie that fits the group's combined taste. Explain briefly why.
+
+Respond with ONLY valid JSON:
+{"title":"Exact Movie Title","year":2010,"reason":"One sentence why the group would like it"}`;
+
+  const raw = await callAi(prompt);
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error('AI returned invalid format');
+  const parsed = JSON.parse(jsonMatch[0]);
+  if (!parsed.title) throw new Error('AI missing title');
+  return {
+    title: parsed.title.trim(),
+    year: parsed.year || null,
+    reason: parsed.reason?.trim() || 'Picked for your group\'s taste.',
+  };
+}

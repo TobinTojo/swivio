@@ -1,16 +1,21 @@
-import { VOTE } from './votes.js';
+import { VOTE, isPositiveVote, isNegativeVote } from './votes.js';
 
 /**
- * Group match score 0–100 using weighted votes.
- * Watched votes count double (±2) since they're informed opinions.
+ * Group match score 0–100: average of each person's sentiment.
+ * Like / Watched & loved → 100, Dislike / Watched & disliked → 0.
+ * Unanimous likes = 100% (not 75% under the old weighted formula).
  */
 export function groupMovieScore(movieId, votes) {
   const movieVotes = votes.filter((v) => v.movieId === movieId);
   if (movieVotes.length === 0) return 0;
 
-  const sum = movieVotes.reduce((acc, v) => acc + v.vote, 0);
-  const maxAbs = movieVotes.length * 2;
-  return Math.round((sum / maxAbs) * 50 + 50);
+  const perPerson = movieVotes.map((v) => {
+    if (v.vote === VOTE.WATCHED_ENJOYED || v.vote === VOTE.LIKE) return 100;
+    if (v.vote === VOTE.WATCHED_DISLIKED || v.vote === VOTE.DISLIKE) return 0;
+    return 50;
+  });
+
+  return Math.round(perPerson.reduce((a, b) => a + b, 0) / perPerson.length);
 }
 
 /**
@@ -43,18 +48,35 @@ function countVotesForMovie(votes, movieId, targets) {
   return votes.filter((v) => v.movieId === movieId && targets.includes(v.vote)).length;
 }
 
-/** Rank movies by group score, descending */
-export function rankMatches(movies, votes) {
+function movieVoteStats(votes, movieId) {
+  const movieVotes = votes.filter((v) => v.movieId === movieId);
+  return {
+    voteCount: movieVotes.length,
+    positiveCount: movieVotes.filter((v) => isPositiveVote(v.vote)).length,
+    negativeCount: movieVotes.filter((v) => isNegativeVote(v.vote)).length,
+  };
+}
+
+/** Rank movies by group score — only titles the group has voted on */
+export function rankMatches(movies, votes, roomSize = null) {
   return movies
-    .map((movie) => ({
-      ...movie,
-      score: groupMovieScore(movie.id, votes),
-      likeCount: countVotesForMovie(votes, movie.id, [VOTE.LIKE]),
-      dislikeCount: countVotesForMovie(votes, movie.id, [VOTE.DISLIKE]),
-      watchedEnjoyedCount: countVotesForMovie(votes, movie.id, [VOTE.WATCHED_ENJOYED]),
-      watchedDislikedCount: countVotesForMovie(votes, movie.id, [VOTE.WATCHED_DISLIKED]),
-    }))
-    .sort((a, b) => b.score - a.score || b.likeCount + b.watchedEnjoyedCount - (a.likeCount + a.watchedEnjoyedCount));
+    .map((movie) => {
+      const stats = movieVoteStats(votes, movie.id);
+      return {
+        ...movie,
+        score: groupMovieScore(movie.id, votes),
+        likeCount: countVotesForMovie(votes, movie.id, [VOTE.LIKE]),
+        dislikeCount: countVotesForMovie(votes, movie.id, [VOTE.DISLIKE]),
+        watchedEnjoyedCount: countVotesForMovie(votes, movie.id, [VOTE.WATCHED_ENJOYED]),
+        watchedDislikedCount: countVotesForMovie(votes, movie.id, [VOTE.WATCHED_DISLIKED]),
+        positiveCount: stats.positiveCount,
+        negativeCount: stats.negativeCount,
+        voteCount: stats.voteCount,
+        roomSize,
+      };
+    })
+    .filter((movie) => movie.voteCount > 0)
+    .sort((a, b) => b.score - a.score || b.positiveCount - a.positiveCount);
 }
 
 /** Unique genre names picked by anyone in the room */
