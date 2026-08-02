@@ -3,6 +3,13 @@ import { todayDateString, DAILY_SWIPE_LIMIT } from './dailyUtils.js';
 import { fetchMoviesByGenres } from './tmdb.js';
 import { mockMovies } from '../data/mockMovies.js';
 import { isPositiveVote } from './votes.js';
+import {
+  getLocalDailyGenres,
+  setLocalDailyGenres,
+  getLocalTodaySwipes,
+  addLocalSwipe,
+} from './dailyStorage.js';
+import { isMissingTableError } from './dbErrors.js';
 
 function subscribeTable(table, filterKey, filterVal, fetchFn, callback) {
   fetchFn(filterVal).then(callback).catch(console.error);
@@ -20,6 +27,8 @@ function subscribeTable(table, filterKey, filterVal, fetchFn, callback) {
 }
 
 export async function upsertUserProfile(userId, { displayName, avatarUrl, favoriteGenres }) {
+  if (favoriteGenres) setLocalDailyGenres(userId, favoriteGenres);
+
   const row = {
     user_id: userId,
     display_name: displayName,
@@ -29,46 +38,91 @@ export async function upsertUserProfile(userId, { displayName, avatarUrl, favori
   if (favoriteGenres) row.favorite_genres = favoriteGenres;
 
   const { error } = await supabase.from('user_profiles').upsert(row, { onConflict: 'user_id' });
-  if (error) throw error;
+  if (error && !isMissingTableError(error)) throw error;
 }
 
 export async function getUserProfile(userId) {
-  const { data, error } = await supabase
-    .from('user_profiles')
-    .select('*')
-    .eq('user_id', userId)
-    .maybeSingle();
-  if (error) throw error;
-  if (!data) return null;
-  return {
-    userId: data.user_id,
-    displayName: data.display_name,
-    avatarUrl: data.avatar_url,
-    favoriteGenres: data.favorite_genres ?? [],
-  };
+  const localGenres = getLocalDailyGenres(userId);
+
+  try {
+    const { data, error } = await supabase
+      .from('user_profiles')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (error) {
+      if (isMissingTableError(error)) {
+        return localGenres?.length
+          ? { userId, favoriteGenres: localGenres }
+          : null;
+      }
+      throw error;
+    }
+
+    if (!data) {
+      return localGenres?.length
+        ? { userId, favoriteGenres: localGenres }
+        : null;
+    }
+
+    return {
+      userId: data.user_id,
+      displayName: data.display_name,
+      avatarUrl: data.avatar_url,
+      favoriteGenres: data.favorite_genres?.length ? data.favorite_genres : (localGenres ?? []),
+    };
+  } catch (err) {
+    if (isMissingTableError(err) && localGenres?.length) {
+      return { userId, favoriteGenres: localGenres };
+    }
+    if (isMissingTableError(err)) return null;
+    throw err;
+  }
 }
 
 export async function fetchTodaySwipeCount(userId) {
   const today = todayDateString();
-  const { count, error } = await supabase
-    .from('user_swipes')
-    .select('*', { count: 'exact', head: true })
-    .eq('user_id', userId)
-    .eq('swipe_date', today);
-  if (error) throw error;
-  return count ?? 0;
+  const local = getLocalTodaySwipes(userId, today).length;
+
+  try {
+    const { count, error } = await supabase
+      .from('user_swipes')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .eq('swipe_date', today);
+
+    if (error) {
+      if (isMissingTableError(error)) return local;
+      throw error;
+    }
+    return Math.max(count ?? 0, local);
+  } catch (err) {
+    if (isMissingTableError(err)) return local;
+    throw err;
+  }
 }
 
 export async function fetchMemberSwipeHistories(userIds) {
   if (userIds.length === 0) return [];
-  const { data, error } = await supabase
-    .from('user_swipes')
-    .select('*')
-    .in('user_id', userIds)
-    .order('created_at', { ascending: false })
-    .limit(200);
-  if (error) throw error;
-  return (data ?? []).map(mapUserSwipe);
+
+  try {
+    const { data, error } = await supabase
+      .from('user_swipes')
+      .select('*')
+      .in('user_id', userIds)
+      .order('created_at', { ascending: false })
+      .limit(200);
+
+    if (error) {
+      if (isMissingTableError(error)) return [];
+      throw error;
+    }
+    return (data ?? []).map(mapUserSwipe);
+  } catch (err) {
+    if (isMissingTableError(err)) return [];
+    throw err;
+  }
 }
 
 function mapUserSwipe(row) {
@@ -85,6 +139,12 @@ function mapUserSwipe(row) {
 
 export async function saveUserSwipe(userId, movie, vote) {
   const today = todayDateString();
+  addLocalSwipe(userId, today, {
+    movieId: movie.id,
+    title: movie.title,
+    vote,
+  });
+
   const { error } = await supabase.from('user_swipes').insert({
     user_id: userId,
     movie_id: movie.id,
@@ -94,19 +154,33 @@ export async function saveUserSwipe(userId, movie, vote) {
     vote,
     swipe_date: today,
   });
-  if (error) throw error;
+  if (error && !isMissingTableError(error)) throw error;
 }
 
 export async function fetchDailyDeck(userId, genreNames) {
   const today = todayDateString();
-  const { data: swipedToday } = await supabase
-    .from('user_swipes')
-    .select('movie_id')
-    .eq('user_id', userId)
-    .eq('swipe_date', today);
+  let exclude = new Set();
 
-  const exclude = new Set((swipedToday ?? []).map((r) => r.movie_id));
-  const remaining = DAILY_SWIPE_LIMIT - (swipedToday?.length ?? 0);
+  try {
+    const { data: swipedToday, error } = await supabase
+      .from('user_swipes')
+      .select('movie_id')
+      .eq('user_id', userId)
+      .eq('swipe_date', today);
+
+    if (error && !isMissingTableError(error)) throw error;
+    if (swipedToday) {
+      exclude = new Set(swipedToday.map((r) => r.movie_id));
+    }
+  } catch (err) {
+    if (!isMissingTableError(err)) throw err;
+  }
+
+  for (const s of getLocalTodaySwipes(userId, today)) {
+    exclude.add(s.movieId);
+  }
+
+  const remaining = DAILY_SWIPE_LIMIT - exclude.size;
   if (remaining <= 0) return [];
 
   const genres = genreNames?.length ? genreNames : ['Drama', 'Comedy', 'Action'];
@@ -187,7 +261,7 @@ export async function fetchDailyPick(roomId, pickDate = todayDateString()) {
     .eq('room_id', roomId)
     .eq('pick_date', pickDate)
     .maybeSingle();
-  if (error) throw error;
+  if (error && !isMissingTableError(error)) throw error;
   return data ? mapDailyPick(data) : null;
 }
 
@@ -197,7 +271,7 @@ export async function fetchDailyVotes(roomId, pickDate = todayDateString()) {
     .select('*')
     .eq('room_id', roomId)
     .eq('pick_date', pickDate);
-  if (error) throw error;
+  if (error && !isMissingTableError(error)) throw error;
   return (data ?? []).map(mapDailyVote);
 }
 
@@ -213,7 +287,7 @@ export async function insertDailyPick(roomId, pickDate, movie, aiReason) {
     genres: movie.genres ?? [],
     ai_reason: aiReason,
   });
-  if (error) throw error;
+  if (error && !isMissingTableError(error)) throw error;
 }
 
 export async function castDailyVote(roomId, userId, vote, pickDate = todayDateString()) {
@@ -226,7 +300,7 @@ export async function castDailyVote(roomId, userId, vote, pickDate = todayDateSt
     },
     { onConflict: 'room_id,pick_date,user_id' }
   );
-  if (error) throw error;
+  if (error && !isMissingTableError(error)) throw error;
 }
 
 export function subscribeDailyPick(roomId, pickDate, callback) {

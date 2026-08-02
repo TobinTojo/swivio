@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { fetchMoviesByGenres } from './tmdb.js';
 import { appendRecommendedMovie as buildNextMovie } from './recommendations.js';
 import { ROOM_STATUS, normalizeRoomStatus, canJoinRoom } from './lobby.js';
+import { isMissingColumnError } from './dbErrors.js';
 
 export { ROOM_STATUS, normalizeRoomStatus, canJoinRoom };
 
@@ -70,6 +71,24 @@ function mapVote(row) {
     vote: row.vote,
     createdAt: row.created_at,
   };
+}
+
+async function upsertRoomUserRow(row, { minimalExtra = {} } = {}) {
+  let { error } = await supabase.from('room_users').upsert(row, { onConflict: 'room_id,user_id' });
+
+  if (error && isMissingColumnError(error)) {
+    const minimal = {
+      room_id: row.room_id,
+      user_id: row.user_id,
+      display_name: row.display_name,
+      last_seen: row.last_seen ?? new Date().toISOString(),
+      ...minimalExtra,
+    };
+    if (row.favorite_genres) minimal.favorite_genres = row.favorite_genres;
+    ({ error } = await supabase.from('room_users').upsert(minimal, { onConflict: 'room_id,user_id' }));
+  }
+
+  if (error) throw error;
 }
 
 export async function createRoom(roomId, hostUserId) {
@@ -199,22 +218,7 @@ export async function joinRoomUser(roomId, userId, displayName, avatarUrl = null
 
   if (avatarUrl) row.avatar_url = avatarUrl;
 
-  let { error } = await supabase.from('room_users').upsert(row, { onConflict: 'room_id,user_id' });
-
-  // Fallback if migration not run yet
-  if (error) {
-    ({ error } = await supabase.from('room_users').upsert(
-      {
-        room_id: roomId,
-        user_id: userId,
-        display_name: displayName,
-        last_seen: new Date().toISOString(),
-      },
-      { onConflict: 'room_id,user_id' }
-    ));
-  }
-
-  if (error) throw error;
+  await upsertRoomUserRow(row);
 }
 
 export async function leaveRoomUser(roomId, userId) {
@@ -236,21 +240,16 @@ export async function setUserReady(roomId, userId, isReady, displayName, avatarU
   };
   if (avatarUrl) row.avatar_url = avatarUrl;
 
-  let { error } = await supabase.from('room_users').upsert(row, { onConflict: 'room_id,user_id' });
-
-  if (error) {
-    ({ error } = await supabase.from('room_users').upsert(
-      {
-        room_id: roomId,
-        user_id: userId,
-        display_name: displayName,
-        last_seen: new Date().toISOString(),
-      },
-      { onConflict: 'room_id,user_id' }
-    ));
+  try {
+    await upsertRoomUserRow(row);
+  } catch (err) {
+    if (isMissingColumnError(err) && 'is_ready' in row) {
+      throw new Error(
+        'Ready-up needs a Supabase migration. Run supabase/migration_lobby.sql in the SQL Editor, then refresh.'
+      );
+    }
+    throw err;
   }
-
-  if (error) throw error;
 }
 
 export async function startRoomFromLobby(roomId, hostUserId) {
@@ -285,22 +284,7 @@ export async function saveUserGenres(roomId, userId, genres, displayName, avatar
   };
   if (avatarUrl) row.avatar_url = avatarUrl;
 
-  let { error } = await supabase.from('room_users').upsert(row, { onConflict: 'room_id,user_id' });
-
-  if (error) {
-    ({ error } = await supabase.from('room_users').upsert(
-      {
-        room_id: roomId,
-        user_id: userId,
-        display_name: displayName,
-        favorite_genres: genres,
-        last_seen: new Date().toISOString(),
-      },
-      { onConflict: 'room_id,user_id' }
-    ));
-  }
-
-  if (error) throw error;
+  await upsertRoomUserRow(row);
 }
 
 export async function roomExists(roomId) {

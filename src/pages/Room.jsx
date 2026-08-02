@@ -111,7 +111,7 @@ export default function Room() {
 
     joinedRef.current = true;
     joinRoomUser(roomId, userId, displayName.trim(), avatarUrl)
-      .then(() => upsertUserProfile(userId, { displayName, avatarUrl }))
+      .then(() => upsertUserProfile(userId, { displayName, avatarUrl }).catch(() => {}))
       .catch((err) => {
         setJoinError(err.message);
         if (err.message.includes("can't join")) {

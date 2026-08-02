@@ -65,7 +65,7 @@ export default function Navbar({
           </button>
         )}
         {userChip}
-        {avatarUrl && (
+        {!userChip && avatarUrl && (
           <img className="navbar__avatar" src={avatarUrl} alt="" title={displayName} />
         )}
       </div>

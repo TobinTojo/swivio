@@ -169,7 +169,6 @@ export default function Landing() {
 
       <Navbar
         variant="landing"
-        avatarUrl={isSignedIn ? avatarUrl : null}
         displayName={displayName}
         statusPills={supabaseReady ? (
           <div className="landing-nav__status">
